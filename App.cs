@@ -15,7 +15,8 @@ public class PromptItem {
     public string Name { get; set; }
     public string Template { get; set; }
     public Dictionary<string,string> Values { get; set; }
-    public PromptItem() { Name="Untitled template"; Template=""; Values=new Dictionary<string,string>(); }
+    public Dictionary<string,int> Cleanup { get; set; }
+    public PromptItem() { Name="Untitled template"; Template=""; Values=new Dictionary<string,string>(); Cleanup=new Dictionary<string,int>(); }
 }
 public class Workspace {
     public List<PromptItem> Items { get; set; }
@@ -25,7 +26,14 @@ public class Workspace {
 public static class Engine {
     public static readonly Regex Pattern = new Regex(@"\{\{\s*([\p{L}\p{N}_][\p{L}\p{N}_ \-]*?)\s*\}\}");
     public static List<string> Names(string template) { return Pattern.Matches(template).Cast<Match>().Select(m=>m.Groups[1].Value.Trim()).Distinct().ToList(); }
-    public static string Render(string template, Dictionary<string,string> values) { return Pattern.Replace(template,m=> { string value; return values.TryGetValue(m.Groups[1].Value.Trim(),out value) && !string.IsNullOrWhiteSpace(value) ? value : m.Value; }); }
+    public static string Clean(string value, int options) {
+        if(string.IsNullOrEmpty(value)) return value;
+        Func<char,bool> remove=c=> ((options&1)!=0 && c=='.') || ((options&2)!=0 && c==',') || ((options&4)!=0 && c==';') || ((options&8)!=0 && c==':') || ((options&16)!=0 && (c=='"'||c=='“'||c=='”')) || ((options&32)!=0 && char.IsWhiteSpace(c));
+        int start=0,end=value.Length; while(start<end && remove(value[start]))start++; while(end>start && remove(value[end-1]))end--;
+        return value.Substring(start,end-start);
+    }
+    public static string Render(string template, Dictionary<string,string> values) { return Render(template,values,null); }
+    public static string Render(string template, Dictionary<string,string> values, Dictionary<string,int> cleanup) { return Pattern.Replace(template,m=> { string name=m.Groups[1].Value.Trim(),value; int options=0; if(cleanup!=null)cleanup.TryGetValue(name,out options); return values.TryGetValue(name,out value) && !string.IsNullOrWhiteSpace(value) ? Clean(value,options) : m.Value; }); }
 }
 public class MainWindow : Window {
     Workspace state; PromptItem current; bool loading; bool rebuilding;
@@ -41,7 +49,7 @@ public class MainWindow : Window {
         PreviewKeyDown+=(s,e)=> { if(Keyboard.Modifiers==(ModifierKeys.Control|ModifierKeys.Shift) && e.Key==Key.C){Copy();e.Handled=true;} else if(Keyboard.Modifiers==ModifierKeys.Control && e.Key==Key.N){New();e.Handled=true;} };
     }
     Workspace Load() {
-        try { var path=Path.Combine(folder,"workspace.json"); if(File.Exists(path)) { var loaded=new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Deserialize<Workspace>(File.ReadAllText(path)); if(loaded!=null && loaded.Items!=null && loaded.Items.Count>0) { foreach(var item in loaded.Items){if(item.Values==null)item.Values=new Dictionary<string,string>();if(item.Template==null)item.Template="";} return loaded; } } } catch { MessageBox.Show("Your saved workspace could not be loaded. A recovery copy will be kept before saving.","Prompt Studio"); try { File.Copy(Path.Combine(folder,"workspace.json"),Path.Combine(folder,"workspace.recovery-"+DateTime.Now.ToString("yyyyMMddHHmmss")+".json")); } catch {} }
+        try { var path=Path.Combine(folder,"workspace.json"); if(File.Exists(path)) { var loaded=new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Deserialize<Workspace>(File.ReadAllText(path)); if(loaded!=null && loaded.Items!=null && loaded.Items.Count>0) { foreach(var item in loaded.Items){if(item.Cleanup==null)item.Cleanup=new Dictionary<string,int>();if(item.Values==null)item.Values=new Dictionary<string,string>();if(item.Template==null)item.Template="";} return loaded; } } } catch { MessageBox.Show("Your saved workspace could not be loaded. A recovery copy will be kept before saving.","Prompt Studio"); try { File.Copy(Path.Combine(folder,"workspace.json"),Path.Combine(folder,"workspace.recovery-"+DateTime.Now.ToString("yyyyMMddHHmmss")+".json")); } catch {} }
         return new Workspace { Items=new List<PromptItem> {
             new PromptItem { Name="Content brief", Template="You are an experienced {{role}}.\n\nCreate a clear, useful response about {{topic}} for {{audience}}.\n\nUse this source material:\n{{source_text}}\n\nRequirements:\n• Write in a {{tone}} tone.\n• Structure the response as {{format}}.\n• Stay grounded in the source material.\n• If something is unclear, explain what information is missing.", Values=new Dictionary<string,string>{{"role","content strategist"},{"topic","a new community garden"},{"audience","local residents"},{"source_text","The garden opens on Saturday. Volunteers can join weekly planting sessions. All experience levels are welcome."},{"tone","warm and approachable"},{"format","a short introduction and three actionable bullet points"}} },
             new PromptItem { Name="Summarize a document", Template="Summarize the document below for {{audience}}.\n\nDocument:\n{{document}}\n\nReturn:\n1. A short overview\n2. The key findings\n3. Recommended next steps\n\nKeep the summary under {{word_count}} words.", Values=new Dictionary<string,string>{{"audience","a busy team lead"},{"word_count","250"}} },
@@ -79,13 +87,31 @@ public class MainWindow : Window {
         var footer=new StackPanel{Margin=new Thickness(0,16,0,0)};count=Label("",14,"Muted");footer.Children.Add(count);var buttons=new WrapPanel{Margin=new Thickness(0,12,0,0)};buttons.Children.Add(Btn("Copy prompt",Copy,true));buttons.Children.Add(Btn("Export .txt",Export));footer.Children.Add(buttons);DockPanel.SetDock(footer,Dock.Bottom);right.Children.Add(footer);output=Field(true);output.IsReadOnly=true;right.Children.Add(output);var rc=Card(right);rc.Margin=new Thickness(0);Grid.SetColumn(rc,2);columns.Children.Add(rc);
         status=Label("Saved on this device  ·  No cloud connection",13,"Muted");status.Margin=new Thickness(0,16,0,0);Grid.SetRow(status,3);root.Children.Add(status);RefreshLibrary();
     }
+    UIElement CleanupControls(string name) {
+        int selected; current.Cleanup.TryGetValue(name,out selected);
+        var body=new StackPanel();
+        body.Children.Add(Label("Trim selected characters from the start and end. Text inside the value stays intact.",14,"Muted"));
+        var choices=new WrapPanel{Margin=new Thickness(0,8,0,0)};
+        string[] labels={"Period (.)","Comma (,)","Semicolon (;)","Colon (:)","Quotes (\")","Whitespace"};
+        for(int i=0;i<labels.Length;i++) {
+            int flag=1<<i;
+            var check=new CheckBox{Content=labels[i],IsChecked=(selected&flag)!=0,FontSize=15,Margin=new Thickness(0,0,16,10),Padding=new Thickness(4),MinHeight=30};
+            check.SetResourceReference(Control.ForegroundProperty,"Text");
+            System.Windows.Automation.AutomationProperties.SetName(check,name+": trim "+labels[i]);
+            RoutedEventHandler changed=(s,e)=>{int options;current.Cleanup.TryGetValue(name,out options);current.Cleanup[name]=check.IsChecked==true?options|flag:options&~flag;Render();ScheduleSave();};
+            check.Checked+=changed;check.Unchecked+=changed;choices.Children.Add(check);
+        }
+        body.Children.Add(choices);
+        var expander=new Expander{Header="Clean up edges",Content=body,IsExpanded=selected!=0,Margin=new Thickness(0,10,0,0),FontSize=15};
+        expander.SetResourceReference(Control.ForegroundProperty,"Text");return expander;
+    }
     void RefreshLibrary(){rebuilding=true;library.ItemsSource=state.Items.Select(i=>string.IsNullOrWhiteSpace(i.Name)?"Untitled template":i.Name).ToList();library.SelectedIndex=state.Selected;rebuilding=false;}
     void Select(int index){loading=true;state.Selected=index;current=state.Items[index];title.Text=current.Name;editor.Text=current.Template;RefreshLibrary();RebuildInputs();Render();loading=false;ScheduleSave();}
-    void RebuildInputs(){var names=Engine.Names(current.Template);var oldNames=inputs.Children.OfType<StackPanel>().Select(p=>(string)p.Tag).ToList();if(oldNames.SequenceEqual(names)&& !loading)return;inputs.Children.Clear();if(names.Count==0){inputs.Children.Add(Label("Your inputs will appear here.\n\nAdd a {{variable}} to your template to get started.",17,"Muted"));}foreach(var name in names){var panel=new StackPanel{Tag=name,Margin=new Thickness(0,0,0,20)};var label=Label(name.Replace('_',' '),17,"Text");label.FontWeight=FontWeights.SemiBold;panel.Children.Add(label);var token=Label("{{"+name+"}}",12,"Muted");token.Margin=new Thickness(0,3,0,8);panel.Children.Add(token);var field=Field(true);field.MinHeight=100;field.MaxHeight=220;string value;field.Text=current.Values.TryGetValue(name,out value)?value:"";field.ToolTip="Type or paste text for "+name;System.Windows.Automation.AutomationProperties.SetName(field,name);field.TextChanged+=(s,e)=>{current.Values[name]=field.Text;Render();ScheduleSave();};panel.Children.Add(field);inputs.Children.Add(panel);}}
-    void Render(){output.Text=Engine.Render(current.Template,current.Values);var names=Engine.Names(current.Template);int filled=names.Count(n=>current.Values.ContainsKey(n)&&!string.IsNullOrWhiteSpace(current.Values[n]));inputCount.Text=names.Count==0?"No variables yet":filled+" of "+names.Count+" inputs filled";count.Text=output.Text.Length.ToString("N0")+" characters  ·  "+(names.Count-filled==0?"Ready to copy":(names.Count-filled)+" unfilled input(s)");}
+    void RebuildInputs(){var names=Engine.Names(current.Template);var oldNames=inputs.Children.OfType<StackPanel>().Select(p=>(string)p.Tag).ToList();if(oldNames.SequenceEqual(names)&& !loading)return;inputs.Children.Clear();if(names.Count==0){inputs.Children.Add(Label("Your inputs will appear here.\n\nAdd a {{variable}} to your template to get started.",17,"Muted"));}foreach(var name in names){var panel=new StackPanel{Tag=name,Margin=new Thickness(0,0,0,20)};var label=Label(name.Replace('_',' '),17,"Text");label.FontWeight=FontWeights.SemiBold;panel.Children.Add(label);var token=Label("{{"+name+"}}",12,"Muted");token.Margin=new Thickness(0,3,0,8);panel.Children.Add(token);var field=Field(true);field.MinHeight=100;field.MaxHeight=220;string value;field.Text=current.Values.TryGetValue(name,out value)?value:"";field.ToolTip="Type or paste text for "+name;System.Windows.Automation.AutomationProperties.SetName(field,name);field.TextChanged+=(s,e)=>{current.Values[name]=field.Text;Render();ScheduleSave();};panel.Children.Add(field);panel.Children.Add(CleanupControls(name));inputs.Children.Add(panel);}}
+    void Render(){output.Text=Engine.Render(current.Template,current.Values,current.Cleanup);var names=Engine.Names(current.Template);int filled=names.Count(n=>current.Values.ContainsKey(n)&&!string.IsNullOrWhiteSpace(current.Values[n]));inputCount.Text=names.Count==0?"No variables yet":filled+" of "+names.Count+" inputs filled";count.Text=output.Text.Length.ToString("N0")+" characters  ·  "+(names.Count-filled==0?"Ready to copy":(names.Count-filled)+" unfilled input(s)");}
     void AddVariable(){string name=variableName.Text.Trim();if(!Regex.IsMatch(name,@"^[\p{L}\p{N}_][\p{L}\p{N}_ \-]*$")){status.Text="Enter a variable name using letters, numbers, spaces, underscores, or hyphens.";variableName.Focus();return;}int pos=editor.SelectionStart;string token="{{"+name+"}}";editor.SelectedText=token;editor.Focus();editor.CaretIndex=pos+token.Length;variableName.Clear();}
     void New(){state.Items.Add(new PromptItem{Name="Untitled template",Template="Help me with {{task}}.\n\nContext:\n{{context}}\n\nReturn the result as {{format}}."});Select(state.Items.Count-1);title.Focus();title.SelectAll();}
-    void Duplicate(){state.Items.Add(new PromptItem{Name=current.Name+" (copy)",Template=current.Template,Values=new Dictionary<string,string>(current.Values)});Select(state.Items.Count-1);}
+    void Duplicate(){state.Items.Add(new PromptItem{Name=current.Name+" (copy)",Template=current.Template,Values=new Dictionary<string,string>(current.Values),Cleanup=new Dictionary<string,int>(current.Cleanup)});Select(state.Items.Count-1);}
     void Delete(){if(MessageBox.Show(this,"Delete “"+current.Name+"” and its saved inputs?","Delete template",MessageBoxButton.YesNo,MessageBoxImage.Question)!=MessageBoxResult.Yes)return;int index=state.Selected;state.Items.RemoveAt(index);if(state.Items.Count==0)state.Items.Add(new PromptItem());Select(Math.Min(index,state.Items.Count-1));}
     void Copy(){try{Clipboard.SetText(output.Text);status.Text="Prompt copied  ·  Paste it into your favorite AI app";}catch{status.Text="Clipboard is busy. Try copying again.";}}
     void Export(){var dialog=new Microsoft.Win32.SaveFileDialog{Filter="Text file (*.txt)|*.txt",FileName="prompt.txt"};if(dialog.ShowDialog(this)==true){try{File.WriteAllText(dialog.FileName,output.Text);status.Text="Prompt exported successfully";}catch(Exception ex){status.Text="Could not export: "+ex.Message;}}}
@@ -94,4 +120,5 @@ public class Program {
     [STAThread] public static void Main(){var app=new Application();app.Run(new MainWindow());}
 }
 }
+
 

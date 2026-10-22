@@ -11,10 +11,36 @@ if ($names.Count -ne 2) { throw 'Unique variable detection failed' }
 $values['topic'] = '   '
 if ([PromptStudio.Engine]::Render('{{topic}}',$values) -ne '{{topic}}') { throw 'Empty input preservation failed' }
 $window = New-Object PromptStudio.MainWindow
+if ([PromptStudio.Engine]::Clean('  ",;:Hello, world.;:"  ',63) -cne 'Hello, world') { throw 'Combined edge cleanup failed' }
+if ([PromptStudio.Engine]::Clean('..Hello, world..',1) -cne 'Hello, world') { throw 'Period cleanup failed' }
+if ([PromptStudio.Engine]::Clean(" `tHello world`r`n",32) -cne 'Hello world') { throw 'Whitespace cleanup failed' }
+if ([PromptStudio.Engine]::Clean('.,;:',0) -cne '.,;:') { throw 'Cleanup must be opt-in' }
+if ([PromptStudio.Engine]::Clean('.,;:',63) -cne '') { throw 'All-punctuation input failed' }
+$cleanup = New-Object 'System.Collections.Generic.Dictionary[string,int]'
+$cleanup.Add('topic',63)
+$values['topic'] = '  "Hello, world."  '
+if ([PromptStudio.Engine]::Render('Topic: {{topic}}. Again: {{topic}}!', $values, $cleanup) -cne 'Topic: Hello, world. Again: Hello, world!') { throw 'Per-variable cleanup or template preservation failed' }
+if ($values['topic'] -cne '  "Hello, world."  ') { throw 'Original input was modified' }
+Add-Type -AssemblyName System.Web.Extensions
+$serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+$item = New-Object PromptStudio.PromptItem
+$item.Cleanup = $cleanup
+$roundtrip = $serializer.Deserialize($serializer.Serialize($item),[PromptStudio.PromptItem])
+if ($roundtrip.Cleanup['topic'] -ne 63) { throw 'Cleanup persistence failed' }
+$legacy = $serializer.Deserialize('{"Name":"Old","Template":"{{topic}}","Values":{}}',[PromptStudio.PromptItem])
+if ($null -eq $legacy.Cleanup) { throw 'Legacy workspace compatibility failed' }
 $flags = [Reflection.BindingFlags]'Instance,NonPublic'
 $timer = $window.GetType().GetField('saveTimer',$flags).GetValue($window)
 $timer.Stop()
 $state = $window.GetType().GetField('state',$flags).GetValue($window)
+$current = $window.GetType().GetField('current',$flags).GetValue($window)
+$firstName = [PromptStudio.Engine]::Names($current.Template) | Select-Object -First 1
+if ($firstName) {
+    $current.Cleanup[$firstName] = 63
+    $window.GetType().GetField('loading',$flags).SetValue($window,$true)
+    [void]$window.GetType().GetMethod('RebuildInputs',$flags).Invoke($window,@())
+    $window.GetType().GetField('loading',$flags).SetValue($window,$false)
+}
 foreach ($dark in @($false,$true)) {
     $state.Dark = $dark
     [void]$window.GetType().GetMethod('ApplyTheme',$flags).Invoke($window,@())
@@ -32,5 +58,5 @@ foreach ($dark in @($false,$true)) {
     $encoder.Save($stream)
     $stream.Dispose()
 }
-Write-Host 'PASS: repeated variables, whitespace, multiline text, literal replacement, missing values, unique names, light/dark window rendering.'
+Write-Host 'PASS: substitution, edge cleanup, original/template preservation, persistence, legacy compatibility, light/dark window rendering.'
 
