@@ -34,6 +34,20 @@ $timer = $window.GetType().GetField('saveTimer',$flags).GetValue($window)
 $timer.Stop()
 $state = $window.GetType().GetField('state',$flags).GetValue($window)
 $current = $window.GetType().GetField('current',$flags).GetValue($window)
+[void]$window.GetType().GetMethod('ApplyBulkCleanup',$flags).Invoke($window,@(63))
+foreach ($n in [PromptStudio.Engine]::Names($current.Template)) {
+    if ($current.Cleanup[$n] -ne 63) { throw 'Bulk cleanup failed' }
+}
+$editor = $window.GetType().GetField('editor',$flags).GetValue($window)
+$editor.Text += ' {{bulk_test_new}}'
+if ($current.Cleanup['bulk_test_new'] -ne 63) { throw 'New variable inheritance failed' }
+[void]$window.GetType().GetMethod('ApplyBulkCleanup',$flags).Invoke($window,@(34))
+if ($current.Cleanup['bulk_test_new'] -ne 34) { throw 'Custom bulk selection failed' }
+$saved = $serializer.Deserialize($serializer.Serialize($current),[PromptStudio.PromptItem])
+if ($saved.DefaultCleanup -ne 34) { throw 'Bulk default persistence failed' }
+[void]$window.GetType().GetMethod('ApplyBulkCleanup',$flags).Invoke($window,@(0))
+if ($current.DefaultCleanup -ne 0 -or ($current.Cleanup.Values | Where-Object { $_ -ne 0 })) { throw 'Turn off all failed' }
+$timer.Stop()
 $firstName = [PromptStudio.Engine]::Names($current.Template) | Select-Object -First 1
 if ($firstName) {
     $current.Cleanup[$firstName] = 63

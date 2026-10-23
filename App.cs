@@ -16,6 +16,7 @@ public class PromptItem {
     public string Template { get; set; }
     public Dictionary<string,string> Values { get; set; }
     public Dictionary<string,int> Cleanup { get; set; }
+    public int DefaultCleanup { get; set; }
     public PromptItem() { Name="Untitled template"; Template=""; Values=new Dictionary<string,string>(); Cleanup=new Dictionary<string,int>(); }
 }
 public class Workspace {
@@ -39,6 +40,7 @@ public class MainWindow : Window {
     Workspace state; PromptItem current; bool loading; bool rebuilding;
     TextBox title, editor, output, variableName; ComboBox library; StackPanel inputs; TextBlock status, count, inputCount; Button theme;
     DispatcherTimer saveTimer = new DispatcherTimer();
+    CheckBox[] bulkChecks = new CheckBox[6];
     string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"PromptStudio");
     public MainWindow() {
         Title="Prompt Studio"; Width=1480; Height=940; MinWidth=1080; MinHeight=720; WindowStartupLocation=WindowStartupLocation.CenterScreen;
@@ -82,10 +84,39 @@ public class MainWindow : Window {
         var hint=Label("Write your prompt. Use {{variable}} wherever you want a reusable input.",15,"Muted");hint.Margin=new Thickness(0,16,0,12);Grid.SetRow(hint,1);left.Children.Add(hint);
         editor=Field(true);editor.VerticalContentAlignment=VerticalAlignment.Top;editor.TextChanged+=(s,e)=>{if(loading)return;current.Template=editor.Text;RebuildInputs();Render();ScheduleSave();};Grid.SetRow(editor,2);left.Children.Add(editor);
         var add=new StackPanel{Margin=new Thickness(0,14,0,0)};add.Children.Add(Label("INSERT A VARIABLE",12,"Muted"));variableName=Field(false);variableName.Margin=new Thickness(0,8,0,8);variableName.ToolTip="Variable name, for example: source_text";variableName.KeyDown+=(s,e)=>{if(e.Key==Key.Enter){AddVariable();e.Handled=true;}};add.Children.Add(variableName);add.Children.Add(Btn("+ Add variable",AddVariable));Grid.SetRow(add,3);left.Children.Add(add);columns.Children.Add(Card(left));
-        var middle=new DockPanel();var mh=new StackPanel{Margin=new Thickness(0,0,0,18)};mh.Children.Add(Label("02   FILL IN THE DETAILS   →",13,"Accent"));mh.Children.Add(Label("Your inputs",24,"Text"));inputCount=Label("",15,"Muted");inputCount.Margin=new Thickness(0,8,0,0);mh.Children.Add(inputCount);DockPanel.SetDock(mh,Dock.Top);middle.Children.Add(mh);inputs=new StackPanel();middle.Children.Add(new ScrollViewer{Content=inputs,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled,Padding=new Thickness(0,0,8,0)});var mc=Card(middle);Grid.SetColumn(mc,1);columns.Children.Add(mc);
+        var middle=new DockPanel();var mh=new StackPanel{Margin=new Thickness(0,0,0,18)};mh.Children.Add(Label("02   FILL IN THE DETAILS   →",13,"Accent"));mh.Children.Add(Label("Your inputs",24,"Text"));inputCount=Label("",15,"Muted");inputCount.Margin=new Thickness(0,8,0,0);mh.Children.Add(inputCount);DockPanel.SetDock(mh,Dock.Top);middle.Children.Add(mh);inputs=new StackPanel();var inputBody=new StackPanel();inputBody.Children.Add(BulkCleanupControls());inputBody.Children.Add(inputs);middle.Children.Add(new ScrollViewer{Content=inputBody,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled,Padding=new Thickness(0,0,8,0)});var mc=Card(middle);Grid.SetColumn(mc,1);columns.Children.Add(mc);
         var right=new DockPanel();var rh=new StackPanel{Margin=new Thickness(0,0,0,18)};rh.Children.Add(Label("03   READY TO USE",13,"Accent"));rh.Children.Add(Label("Final prompt",24,"Text"));rh.Children.Add(Label("Live preview · updates as you type",15,"Muted"));DockPanel.SetDock(rh,Dock.Top);right.Children.Add(rh);
         var footer=new StackPanel{Margin=new Thickness(0,16,0,0)};count=Label("",14,"Muted");footer.Children.Add(count);var buttons=new WrapPanel{Margin=new Thickness(0,12,0,0)};buttons.Children.Add(Btn("Copy prompt",Copy,true));buttons.Children.Add(Btn("Export .txt",Export));footer.Children.Add(buttons);DockPanel.SetDock(footer,Dock.Bottom);right.Children.Add(footer);output=Field(true);output.IsReadOnly=true;right.Children.Add(output);var rc=Card(right);rc.Margin=new Thickness(0);Grid.SetColumn(rc,2);columns.Children.Add(rc);
         status=Label("Saved on this device  ·  No cloud connection",13,"Muted");status.Margin=new Thickness(0,16,0,0);Grid.SetRow(status,3);root.Children.Add(status);RefreshLibrary();
+    }
+    UIElement BulkCleanupControls() {
+        var panel=new StackPanel{Margin=new Thickness(0,0,0,20)};
+        panel.Children.Add(Label("Cleanup for all variables",17,"Text"));
+        panel.Children.Add(Label("Apply once to this template. New variables inherit these options.",14,"Muted"));
+        var quick=new WrapPanel{Margin=new Thickness(0,10,0,8)};
+        quick.Children.Add(Btn("Clean all",()=>ApplyBulkCleanup(63),true));
+        quick.Children.Add(Btn("Turn off all",()=>ApplyBulkCleanup(0)));
+        panel.Children.Add(quick);
+        var custom=new StackPanel();var choices=new WrapPanel{Margin=new Thickness(0,8,0,0)};
+        string[] labels={"Period (.)","Comma (,)","Semicolon (;)","Colon (:)","Quotes (\")","Whitespace"};
+        for(int i=0;i<labels.Length;i++) {
+            var check=new CheckBox{Content=labels[i],FontSize=15,Margin=new Thickness(0,0,14,8),Padding=new Thickness(4),MinHeight=30};
+            check.SetResourceReference(Control.ForegroundProperty,"Text");bulkChecks[i]=check;choices.Children.Add(check);
+        }
+        custom.Children.Add(choices);
+        var actions=new WrapPanel();
+        actions.Children.Add(Btn("Select all",()=>SetBulkChecks(63)));
+        actions.Children.Add(Btn("Apply to all variables",()=>ApplyBulkCleanup(bulkChecks.Select((c,i)=>c.IsChecked==true?1<<i:0).Sum())));
+        custom.Children.Add(actions);
+        var expander=new Expander{Header="Choose specific characters",Content=custom,FontSize=15};expander.SetResourceReference(Control.ForegroundProperty,"Text");panel.Children.Add(expander);
+        return panel;
+    }
+    void SetBulkChecks(int options){for(int i=0;i<bulkChecks.Length;i++)bulkChecks[i].IsChecked=(options&(1<<i))!=0;}
+    void ApplyBulkCleanup(int options){
+        current.DefaultCleanup=options;
+        foreach(var name in current.Cleanup.Keys.ToList())current.Cleanup[name]=options;
+        foreach(var name in Engine.Names(current.Template))current.Cleanup[name]=options;
+        SetBulkChecks(options);inputs.Children.Clear();RebuildInputs();Render();ScheduleSave();
     }
     UIElement CleanupControls(string name) {
         int selected; current.Cleanup.TryGetValue(name,out selected);
@@ -102,16 +133,16 @@ public class MainWindow : Window {
             check.Checked+=changed;check.Unchecked+=changed;choices.Children.Add(check);
         }
         body.Children.Add(choices);
-        var expander=new Expander{Header="Clean up edges",Content=body,IsExpanded=selected!=0,Margin=new Thickness(0,10,0,0),FontSize=15};
+        var expander=new Expander{Header="Customize this variable",Content=body,IsExpanded=false,Margin=new Thickness(0,10,0,0),FontSize=15};
         expander.SetResourceReference(Control.ForegroundProperty,"Text");return expander;
     }
     void RefreshLibrary(){rebuilding=true;library.ItemsSource=state.Items.Select(i=>string.IsNullOrWhiteSpace(i.Name)?"Untitled template":i.Name).ToList();library.SelectedIndex=state.Selected;rebuilding=false;}
-    void Select(int index){loading=true;state.Selected=index;current=state.Items[index];title.Text=current.Name;editor.Text=current.Template;RefreshLibrary();RebuildInputs();Render();loading=false;ScheduleSave();}
-    void RebuildInputs(){var names=Engine.Names(current.Template);var oldNames=inputs.Children.OfType<StackPanel>().Select(p=>(string)p.Tag).ToList();if(oldNames.SequenceEqual(names)&& !loading)return;inputs.Children.Clear();if(names.Count==0){inputs.Children.Add(Label("Your inputs will appear here.\n\nAdd a {{variable}} to your template to get started.",17,"Muted"));}foreach(var name in names){var panel=new StackPanel{Tag=name,Margin=new Thickness(0,0,0,20)};var label=Label(name.Replace('_',' '),17,"Text");label.FontWeight=FontWeights.SemiBold;panel.Children.Add(label);var token=Label("{{"+name+"}}",12,"Muted");token.Margin=new Thickness(0,3,0,8);panel.Children.Add(token);var field=Field(true);field.MinHeight=100;field.MaxHeight=220;string value;field.Text=current.Values.TryGetValue(name,out value)?value:"";field.ToolTip="Type or paste text for "+name;System.Windows.Automation.AutomationProperties.SetName(field,name);field.TextChanged+=(s,e)=>{current.Values[name]=field.Text;Render();ScheduleSave();};panel.Children.Add(field);panel.Children.Add(CleanupControls(name));inputs.Children.Add(panel);}}
+    void Select(int index){loading=true;state.Selected=index;current=state.Items[index];SetBulkChecks(current.DefaultCleanup);title.Text=current.Name;editor.Text=current.Template;RefreshLibrary();RebuildInputs();Render();loading=false;ScheduleSave();}
+    void RebuildInputs(){var names=Engine.Names(current.Template);var oldNames=inputs.Children.OfType<StackPanel>().Select(p=>(string)p.Tag).ToList();if(oldNames.SequenceEqual(names)&& !loading)return;inputs.Children.Clear();if(names.Count==0){inputs.Children.Add(Label("Your inputs will appear here.\n\nAdd a {{variable}} to your template to get started.",17,"Muted"));}foreach(var name in names){if(!current.Cleanup.ContainsKey(name))current.Cleanup[name]=current.DefaultCleanup;var panel=new StackPanel{Tag=name,Margin=new Thickness(0,0,0,20)};var label=Label(name.Replace('_',' '),17,"Text");label.FontWeight=FontWeights.SemiBold;panel.Children.Add(label);var token=Label("{{"+name+"}}",12,"Muted");token.Margin=new Thickness(0,3,0,8);panel.Children.Add(token);var field=Field(true);field.MinHeight=100;field.MaxHeight=220;string value;field.Text=current.Values.TryGetValue(name,out value)?value:"";field.ToolTip="Type or paste text for "+name;System.Windows.Automation.AutomationProperties.SetName(field,name);field.TextChanged+=(s,e)=>{current.Values[name]=field.Text;Render();ScheduleSave();};panel.Children.Add(field);panel.Children.Add(CleanupControls(name));inputs.Children.Add(panel);}}
     void Render(){output.Text=Engine.Render(current.Template,current.Values,current.Cleanup);var names=Engine.Names(current.Template);int filled=names.Count(n=>current.Values.ContainsKey(n)&&!string.IsNullOrWhiteSpace(current.Values[n]));inputCount.Text=names.Count==0?"No variables yet":filled+" of "+names.Count+" inputs filled";count.Text=output.Text.Length.ToString("N0")+" characters  ·  "+(names.Count-filled==0?"Ready to copy":(names.Count-filled)+" unfilled input(s)");}
     void AddVariable(){string name=variableName.Text.Trim();if(!Regex.IsMatch(name,@"^[\p{L}\p{N}_][\p{L}\p{N}_ \-]*$")){status.Text="Enter a variable name using letters, numbers, spaces, underscores, or hyphens.";variableName.Focus();return;}int pos=editor.SelectionStart;string token="{{"+name+"}}";editor.SelectedText=token;editor.Focus();editor.CaretIndex=pos+token.Length;variableName.Clear();}
     void New(){state.Items.Add(new PromptItem{Name="Untitled template",Template="Help me with {{task}}.\n\nContext:\n{{context}}\n\nReturn the result as {{format}}."});Select(state.Items.Count-1);title.Focus();title.SelectAll();}
-    void Duplicate(){state.Items.Add(new PromptItem{Name=current.Name+" (copy)",Template=current.Template,Values=new Dictionary<string,string>(current.Values),Cleanup=new Dictionary<string,int>(current.Cleanup)});Select(state.Items.Count-1);}
+    void Duplicate(){state.Items.Add(new PromptItem{Name=current.Name+" (copy)",Template=current.Template,Values=new Dictionary<string,string>(current.Values),Cleanup=new Dictionary<string,int>(current.Cleanup),DefaultCleanup=current.DefaultCleanup});Select(state.Items.Count-1);}
     void Delete(){if(MessageBox.Show(this,"Delete “"+current.Name+"” and its saved inputs?","Delete template",MessageBoxButton.YesNo,MessageBoxImage.Question)!=MessageBoxResult.Yes)return;int index=state.Selected;state.Items.RemoveAt(index);if(state.Items.Count==0)state.Items.Add(new PromptItem());Select(Math.Min(index,state.Items.Count-1));}
     void Copy(){try{Clipboard.SetText(output.Text);status.Text="Prompt copied  ·  Paste it into your favorite AI app";}catch{status.Text="Clipboard is busy. Try copying again.";}}
     void Export(){var dialog=new Microsoft.Win32.SaveFileDialog{Filter="Text file (*.txt)|*.txt",FileName="prompt.txt"};if(dialog.ShowDialog(this)==true){try{File.WriteAllText(dialog.FileName,output.Text);status.Text="Prompt exported successfully";}catch(Exception ex){status.Text="Could not export: "+ex.Message;}}}
@@ -120,5 +151,6 @@ public class Program {
     [STAThread] public static void Main(){var app=new Application();app.Run(new MainWindow());}
 }
 }
+
 
 
